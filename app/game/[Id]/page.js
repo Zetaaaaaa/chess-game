@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import { Chess } from 'chess.js';
 import Pusher from 'pusher-js';
@@ -9,6 +9,13 @@ const PIECE_SYMBOLS = {
   wk: '\u2654', wq: '\u2655', wr: '\u2656', wb: '\u2657', wn: '\u2658', wp: '\u2659',
   bk: '\u265A', bq: '\u265B', br: '\u265C', bb: '\u265D', bn: '\u265E', bp: '\u265F',
 };
+
+// Clones a Chess instance preserving full move history via PGN
+function cloneGame(source) {
+  const clone = new Chess();
+  clone.loadPgn(source.pgn());
+  return clone;
+}
 
 export default function GamePage() {
   const params = useParams();
@@ -20,22 +27,20 @@ export default function GamePage() {
   const [selectedSquare, setSelectedSquare] = useState(null);
   const [legalMoves, setLegalMoves] = useState([]);
   const [status, setStatus] = useState('');
+  const historyEndRef = useRef(null);
 
-    useEffect(() => {
-    // Connect to Pusher using the public credentials
+  useEffect(() => {
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER,
     });
 
-    // Subscribe to this game's unique channel
     const channel = pusher.subscribe(`game-${gameId}`);
 
-    // Listen for move events from the other player
     channel.bind('move-made', (data) => {
-      // Skip events from our own moves
       if (data.player === playerColor) return;
       setGame((prevGame) => {
-        const updatedGame = new Chess(prevGame.fen());
+        // Use cloneGame instead of new Chess(prevGame.fen()) to preserve history
+        const updatedGame = cloneGame(prevGame);
         try {
           updatedGame.move(data.move);
         } catch (e) {
@@ -45,7 +50,6 @@ export default function GamePage() {
       });
     });
 
-    // Clean up on unmount to avoid memory leaks
     return () => {
       channel.unbind_all();
       pusher.unsubscribe(`game-${gameId}`);
@@ -53,7 +57,7 @@ export default function GamePage() {
     };
   }, [gameId, playerColor]);
 
-    useEffect(() => {
+  useEffect(() => {
     if (game.isCheckmate()) {
       setStatus(`Checkmate! ${game.turn() === 'w' ? 'Black' : 'White'} wins!`);
     } else if (game.isDraw()) {
@@ -62,6 +66,12 @@ export default function GamePage() {
       setStatus('Check!');
     } else {
       setStatus(game.turn() === 'w' ? "White's turn" : "Black's turn");
+    }
+  }, [game]);
+
+  useEffect(() => {
+    if (historyEndRef.current) {
+      historyEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [game]);
 
@@ -82,14 +92,16 @@ export default function GamePage() {
     const file = String.fromCharCode(97 + colIndex);
     const rank = 8 - rowIndex;
     return `${file}${rank}`;
-}
-    function handleSquareClick(rowIndex, colIndex) {
+  }
+
+  function handleSquareClick(rowIndex, colIndex) {
     const square = getSquareName(rowIndex, colIndex);
     if (game.turn() !== playerColor) return;
 
     if (selectedSquare) {
       const moveAttempt = { from: selectedSquare, to: square, promotion: 'q' };
-      const gameCopy = new Chess(game.fen());
+      // Use cloneGame instead of new Chess(game.fen()) to preserve history
+      const gameCopy = cloneGame(game);
 
       try {
         gameCopy.move(moveAttempt);
@@ -131,7 +143,20 @@ export default function GamePage() {
     return className;
   }
 
-    const shareLink = typeof window !== 'undefined'
+  function getMoveHistory() {
+    const moves = game.history();
+    const pairs = [];
+    for (let i = 0; i < moves.length; i += 2) {
+      pairs.push({
+        number: Math.floor(i / 2) + 1,
+        white: moves[i],
+        black: moves[i + 1] || '',
+      });
+    }
+    return pairs;
+  }
+
+  const shareLink = typeof window !== 'undefined'
     ? `${window.location.origin}/game/${gameId}?player=black`
     : '';
 
@@ -142,24 +167,42 @@ export default function GamePage() {
       <p className="player-info">
         You are playing as: {playerColor === 'w' ? 'White' : 'Black'}
       </p>
-      <div className="board">
-        {getBoard().map((row, rowIndex) =>
-          row.map((piece, colIndex) => (
-            <div
-              key={`${rowIndex}-${colIndex}`}
-              className={getSquareClass(rowIndex, colIndex)}
-              onClick={() => handleSquareClick(rowIndex, colIndex)}
-            >
-              {piece && (
-                    <span className={`piece ${piece.color}`}>
-                        {PIECE_SYMBOLS[`${piece.color}${piece.type}`]}
-                    </span>
-                        )}
-            </div>
-          ))
-        )}
+
+      <div className="game-layout">
+        <div className="board">
+          {getBoard().map((row, rowIndex) =>
+            row.map((piece, colIndex) => (
+              <div
+                key={`${rowIndex}-${colIndex}`}
+                className={getSquareClass(rowIndex, colIndex)}
+                onClick={() => handleSquareClick(rowIndex, colIndex)}
+              >
+                {piece && (
+                  <span className={`piece ${piece.color}`}>
+                    {PIECE_SYMBOLS[`${piece.color}${piece.type}`]}
+                  </span>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="history-panel">
+          <h3>Moves</h3>
+          <div className="history-list">
+            {getMoveHistory().map((pair) => (
+              <div key={pair.number} className="history-row">
+                <span className="move-number">{pair.number}.</span>
+                <span className="move-white">{pair.white}</span>
+                <span className="move-black">{pair.black}</span>
+              </div>
+            ))}
+            <div ref={historyEndRef} />
+          </div>
+        </div>
       </div>
-            {playerColor === 'w' && (
+
+      {playerColor === 'w' && (
         <div className="share-section">
           <p>Share this link with your opponent:</p>
           <input
